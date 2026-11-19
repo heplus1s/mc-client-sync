@@ -34,7 +34,7 @@ GITEE_API = "https://gitee.com/api/v5/repos/" + GITEE_REPO
 MAX_JAR = 50 * 1024 * 1024
 VERSION = re.compile(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 GH_HOSTS = {"api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"}
-GITEE_HOSTS = {"gitee.com", "gitee.com.cn", "gitee-prod-attachment.oss-cn-beijing.aliyuncs.com"}
+GITEE_HOSTS = {"gitee.com", "foruda.gitee.com", "gitee.com.cn", "gitee-prod-attachment.oss-cn-beijing.aliyuncs.com"}
 
 
 class SyncError(Exception):

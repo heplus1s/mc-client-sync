@@ -133,6 +133,12 @@ class MirrorTests(unittest.TestCase):
         with self.assertRaisesRegex(mirror.SyncError, "nothing overwritten"):
             mirror.gitee_download(self.candidate, mirror.sha(self.data))
 
+    def test_verified_gitee_cdn_is_exact_https_host(self):
+        self.assertTrue(mirror.endpoint_ok("https://foruda.gitee.com/file.jar", mirror.GITEE_HOSTS))
+        self.assertFalse(mirror.endpoint_ok("https://foruda.gitee.com.evil.invalid/file.jar", mirror.GITEE_HOSTS))
+        self.assertFalse(mirror.endpoint_ok("http://foruda.gitee.com/file.jar", mirror.GITEE_HOSTS))
+        self.assertFalse(mirror.endpoint_ok("https://user@foruda.gitee.com/file.jar", mirror.GITEE_HOSTS))
+
     def test_possible_credential_redirects_fail(self):
         self.assertFalse(mirror.endpoint_ok("https://api.github.com@other.invalid", mirror.GH_HOSTS))
         self.assertFalse(mirror.endpoint_ok("http://api.github.com", mirror.GH_HOSTS))
