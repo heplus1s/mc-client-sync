@@ -114,6 +114,19 @@ class MirrorTests(unittest.TestCase):
         mirror.copy(self.candidate, "token", True)
         self.assertEqual(order, ["upload", "verify"])
 
+    @patch.object(mirror, "gitee_download")
+    @patch.object(mirror, "gitee_upload", side_effect=mirror.SyncError("Network request failed (TimeoutError)"))
+    @patch.object(mirror, "list_attachments")
+    @patch.object(mirror, "find_release")
+    @patch.object(mirror, "request")
+    def test_lost_upload_response_checks_read_only_without_reupload(self, request, find_release, listing, upload, download):
+        request.return_value = self.data
+        find_release.return_value = {"id": 123, "tag_name": self.candidate.gitee_tag}
+        listing.side_effect = [[], [{"name": self.candidate.file}]]
+        mirror.copy(self.candidate, "token", True)
+        upload.assert_called_once()
+        download.assert_called_once()
+
     @patch.object(mirror, "request")
     def test_public_copy_refuses_different_bytes(self, request):
         request.return_value = b"not the upstream jar"

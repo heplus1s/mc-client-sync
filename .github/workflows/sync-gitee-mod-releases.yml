@@ -53,6 +53,7 @@ jobs:
           set -euo pipefail
           args=(--manifest-mode "$GITEE_MANIFEST_MODE")
           if [[ "$APPLY" == "true" ]]; then args+=(--apply); fi
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then args+=(--probe-gitee); fi
           if [[ -n "$MOD" ]]; then args+=(--mod "$MOD"); fi
           if [[ -n "$TAG" ]]; then args+=(--tag "$TAG"); fi
           python3 scripts/sync_gitee_releases.py "${args[@]}"

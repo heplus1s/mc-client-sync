@@ -63,18 +63,20 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def request(url, *, hosts, limit=2_000_000, data=None, headers=None, redirects=False):
+def request(url, *, hosts, limit=2_000_000, data=None, headers=None, redirects=False, timeout=30):
     if not endpoint_ok(url, hosts):
         raise SyncError("Unapproved endpoint")
     req = urllib.request.Request(url, data=data, headers={"User-Agent": "mc-client-pack-sync/1", **(headers or {})})
     opener = urllib.request.build_opener(SafeRedirect(hosts, redirects))
     try:
-        with opener.open(req, timeout=30) as response:
+        with opener.open(req, timeout=timeout) as response:
             contents = response.read(limit + 1)
     except urllib.error.HTTPError as exc:
         raise HttpStatus(exc.code) from None
     except (OSError, ValueError) as exc:
-        raise SyncError("Network request failed") from exc
+        reason = getattr(exc, "reason", exc)
+        # Preserve only the exception type; arguments may include a URL with credentials.
+        raise SyncError(f"Network request failed ({type(reason).__name__})") from None
     if len(contents) > limit:
         raise SyncError("Response size exceeds limit")
     return contents
@@ -197,7 +199,7 @@ def gitee_upload(release_id, candidate, data, token):
     part = f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{candidate.file}"\r\nContent-Type: application/java-archive\r\n\r\n'
     body = (meta + part).encode() + data + f"\r\n--{boundary}--\r\n".encode()
     json_request(f"{GITEE_API}/releases/{release_id}/attach_files", hosts={"gitee.com"}, data=body,
-                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}, timeout=90)
 
 
 def find_release(candidate, token):
@@ -222,6 +224,32 @@ def gitee_download(candidate, expected):
             time.sleep(2 ** i)
 
 
+def gitee_stage(stage, action, *args):
+    try:
+        return action(*args)
+    except SyncError as exc:
+        raise SyncError(f"Gitee {stage}: {exc}") from None
+
+
+def list_attachments(release_id, token):
+    attachments = gitee_read(f"/releases/{release_id}/attach_files", token)
+    if not isinstance(attachments, list):
+        raise SyncError("Unexpected Gitee attachments response")
+    return attachments
+
+
+def probe_existing_release(candidate, token):
+    release = gitee_stage("release lookup", find_release, candidate, token)
+    if release is None:
+        print(f"GITEE READ CHECK {candidate.gitee_tag}: no existing release")
+        return
+    release_id = release.get("id")
+    if type(release_id) is not int or release_id <= 0:
+        raise SyncError("Unexpected Gitee release identity")
+    attachments = gitee_stage("attachment listing", list_attachments, release_id, token)
+    print(f"GITEE READ CHECK {candidate.gitee_tag}: {len(attachments)} attachments; no writes")
+
+
 def copy(candidate, token, apply):
     try:
         data = request(candidate.url, hosts=GH_HOSTS, limit=MAX_JAR, redirects=True)
@@ -232,20 +260,29 @@ def copy(candidate, token, apply):
     if not apply:
         print(f"DRY RUN {candidate.gitee_tag}: {candidate.file} SHA256={digest}; no Gitee writes.")
         return
-    existing = find_release(candidate, token)
-    release = existing if existing is not None else gitee_create(candidate, token)
+    print(f"UPSTREAM VERIFIED {candidate.file} SHA256={digest}", flush=True)
+    existing = gitee_stage("release lookup", find_release, candidate, token)
+    release = existing if existing is not None else gitee_stage("release creation", gitee_create, candidate, token)
     if release.get("tag_name") != candidate.gitee_tag or type(release.get("id")) is not int or release["id"] <= 0:
         raise SyncError("Unexpected Gitee release identity")
     release_id = release["id"]
-    attachments = gitee_read(f"/releases/{release_id}/attach_files", token)
-    if not isinstance(attachments, list):
-        raise SyncError("Unexpected Gitee attachments response")
+    attachments = gitee_stage("attachment listing", list_attachments, release_id, token)
     matches = [item for item in attachments if item.get("name") == candidate.file]
     if len(matches) > 1:
         raise SyncError("Ambiguous Gitee attachments; no overwrite")
     if not matches:
-        gitee_upload(release_id, candidate, data, token)
-    gitee_download(candidate, digest)
+        print(f"GITEE ATTACHMENT UPLOAD {candidate.file}", flush=True)
+        try:
+            gitee_stage("attachment upload", gitee_upload, release_id, candidate, data, token)
+        except SyncError as upload_error:
+            # A lost response may follow a successful upload. Recheck, never replay the POST here.
+            try:
+                recovered = gitee_stage("attachment listing after upload", list_attachments, release_id, token)
+            except SyncError:
+                raise upload_error from None
+            if len([item for item in recovered if item.get("name") == candidate.file]) != 1:
+                raise upload_error from None
+    gitee_stage("anonymous attachment verification", gitee_download, candidate, digest)
     print(f"{'VERIFIED' if matches else 'SYNCED'} {candidate.gitee_tag}: {candidate.gitee_url} SHA256={digest}")
     return {"id": candidate.mod, "version": candidate.version, "file": candidate.file,
             "bytes": candidate.size, "sha256": digest, "url": candidate.gitee_url}
@@ -395,6 +432,7 @@ def main():
     parser.add_argument("--apply", action="store_true", help="Create Gitee releases/assets; default dry run.")
     parser.add_argument("--manifest-mode", choices=("none", "latest", "paired"), default="none",
                         help="On apply, publish verified manifest changes (none, latest only, or both).")
+    parser.add_argument("--probe-gitee", action="store_true", help="With token, check Gitee release/attachment listing without writes.")
     parser.add_argument("--mod", choices=tuple(MODS), help="Limit to one approved mod.")
     parser.add_argument("--tag", help="Use a specific stable GitHub tag, e.g. v1.0.19; requires --mod.")
     args = parser.parse_args()
@@ -407,7 +445,13 @@ def main():
     replacements = {}
     for mod in (args.mod,) if args.mod else MODS:
         try:
-            record = copy(get_github(mod, args.tag), token, args.apply)
+            candidate = get_github(mod, args.tag)
+            if args.probe_gitee and not args.apply and mod == "bankmod":
+                if token:
+                    probe_existing_release(candidate, token)
+                else:
+                    print("GITEE READ CHECK skipped: GITEE_TOKEN is not configured")
+            record = copy(candidate, token, args.apply)
             if record:
                 replacements[mod] = record
         except (SyncError, TypeError, AttributeError, KeyError, ValueError) as exc:
