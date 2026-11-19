@@ -1,0 +1,51 @@
+name: Mirror approved client JARs to Gitee
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Publish release attachments (unchecked is dry run)
+        type: boolean
+        default: false
+      mod:
+        description: One mod ID (blank for all four)
+        type: string
+        default: ''
+      tag:
+        description: Explicit GitHub tag (requires mod, blank for latest official)
+        type: string
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: mc-client-pack-gitee-release-assets
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Validate selection and safety
+        run: python3 -m unittest discover -s tests -p 'test_sync_gitee_releases.py'
+      - name: Copy official JARs only
+        env:
+          GITEE_MANIFEST_MODE: ${{ vars.GITEE_MANIFEST_MODE || 'latest' }}
+          GITEE_ASSETSET_SCHEME: ${{ vars.GITEE_ASSETSET_SCHEME }}
+          GITEE_GIT_USER: ${{ vars.GITEE_GIT_USER || 'intelsayamdyes' }}
+          GITEE_GIT_PASSWORD: ${{ secrets.GITEE_GIT_PASSWORD }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          APPLY: ${{ (github.event_name == 'schedule' && vars.GITEE_SYNC_ENABLED == 'true') || (github.event_name == 'workflow_dispatch' && inputs.apply) }}
+          MOD: ${{ inputs.mod }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--manifest-mode "$GITEE_MANIFEST_MODE")
+          if [[ "$APPLY" == "true" ]]; then args+=(--apply); fi
+          if [[ -n "$MOD" ]]; then args+=(--mod "$MOD"); fi
+          if [[ -n "$TAG" ]]; then args+=(--tag "$TAG"); fi
+          python3 scripts/sync_gitee_releases.py "${args[@]}"
