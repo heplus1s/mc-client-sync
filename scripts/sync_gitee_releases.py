@@ -59,7 +59,10 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if not self.allow or not endpoint_ok(newurl, self.hosts):
-            raise SyncError("Unexpected or credential-bearing redirect")
+            parsed = urllib.parse.urlsplit(newurl)
+            host = parsed.hostname or ""
+            safe_host = host if re.fullmatch(r"[A-Za-z0-9.-]{1,253}", host) else "unknown"
+            raise SyncError(f"Unexpected or credential-bearing redirect (host: {safe_host})")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -247,7 +250,10 @@ def probe_existing_release(candidate, token):
     if type(release_id) is not int or release_id <= 0:
         raise SyncError("Unexpected Gitee release identity")
     attachments = gitee_stage("attachment listing", list_attachments, release_id, token)
-    print(f"GITEE READ CHECK {candidate.gitee_tag}: {len(attachments)} attachments; no writes")
+    print(f"GITEE READ CHECK {candidate.gitee_tag}: {len(attachments)} attachments; no writes", flush=True)
+    if candidate.digest and sum(item.get("name") == candidate.file for item in attachments) == 1:
+        gitee_stage("anonymous attachment verification", gitee_download, candidate, candidate.digest.removeprefix("sha256:"))
+        print(f"GITEE PUBLIC DOWNLOAD VERIFIED {candidate.file}; no writes", flush=True)
 
 
 def copy(candidate, token, apply):
