@@ -1,5 +1,11 @@
 name: Mirror approved client JARs to Gitee
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sync-gitee-mod-releases.yml'
+      - 'scripts/sync_gitee_releases.py'
+      - 'tests/test_sync_gitee_releases.py'
   schedule:
     - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
@@ -37,6 +43,7 @@ jobs:
           GITEE_ASSETSET_SCHEME: ${{ vars.GITEE_ASSETSET_SCHEME }}
           GITEE_GIT_USER: ${{ vars.GITEE_GIT_USER || 'intelsayamdyes' }}
           GITEE_GIT_PASSWORD: ${{ secrets.GITEE_GIT_PASSWORD }}
+          GH_TOKEN: ${{ github.token }}
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           APPLY: ${{ (github.event_name == 'schedule' && vars.GITEE_SYNC_ENABLED == 'true') || (github.event_name == 'workflow_dispatch' && inputs.apply) }}
           MOD: ${{ inputs.mod }}

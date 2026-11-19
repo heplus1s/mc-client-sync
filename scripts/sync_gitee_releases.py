@@ -165,7 +165,15 @@ def inspect_jar(candidate: Candidate, data: bytes):
 def get_github(mod, version=None):
     url = f"https://api.github.com/repos/{GH_OWNER}/{MODS[mod]}/releases"
     path = f"/tags/{urllib.parse.quote(version, safe='')}" if version else "/latest"
-    return candidate_for(mod, json_request(url + path, hosts=GH_HOSTS))
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    gh_token = os.environ.get("GH_TOKEN", "")
+    if gh_token:
+        headers["Authorization"] = "Bearer " + gh_token
+    try:
+        release = json_request(url + path, hosts={"api.github.com"}, headers=headers)
+    except HttpStatus as exc:
+        raise SyncError(f"GitHub Release API returned HTTP {exc.code}") from None
+    return candidate_for(mod, release)
 
 
 def gitee_read(path, token):
@@ -215,7 +223,10 @@ def gitee_download(candidate, expected):
 
 
 def copy(candidate, token, apply):
-    data = request(candidate.url, hosts=GH_HOSTS, limit=MAX_JAR, redirects=True)
+    try:
+        data = request(candidate.url, hosts=GH_HOSTS, limit=MAX_JAR, redirects=True)
+    except HttpStatus as exc:
+        raise SyncError(f"GitHub JAR download returned HTTP {exc.code}") from None
     inspect_jar(candidate, data)
     digest = sha(data)
     if not apply:
@@ -304,7 +315,7 @@ def git(directory, args, extra_env=None):
     env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0"}
     for key in list(env):
         if key.startswith(("GIT_TRACE", "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")) or key in (
-                "GITEE_TOKEN", "GITEE_GIT_PASSWORD", "GIT_ASKPASS", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_CURL_VERBOSE"):
+                "GH_TOKEN", "GITEE_TOKEN", "GITEE_GIT_PASSWORD", "GIT_ASKPASS", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_CURL_VERBOSE"):
             env.pop(key)
     env.update(extra_env or {})
     try:

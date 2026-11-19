@@ -36,6 +36,22 @@ class MirrorTests(unittest.TestCase):
         self.data = jar()
         self.candidate = mirror.candidate_for("bankmod", release(self.data))
 
+    @patch.object(mirror, "json_request")
+    def test_metadata_uses_action_token_only_on_github_api(self, request):
+        request.return_value = release(self.data)
+        with patch.dict(mirror.os.environ, {"GH_TOKEN": "test-runner-token"}):
+            self.assertEqual(self.candidate, mirror.get_github("bankmod", "v1.0.19"))
+        url = request.call_args.args[0]
+        self.assertEqual("https://api.github.com/repos/heplus1s/MinecraftBankMod/releases/tags/v1.0.19", url)
+        self.assertEqual({"api.github.com"}, request.call_args.kwargs["hosts"])
+        self.assertEqual("Bearer test-runner-token", request.call_args.kwargs["headers"]["Authorization"])
+        self.assertFalse(request.call_args.kwargs.get("redirects", False))
+
+    @patch.object(mirror, "json_request", side_effect=mirror.HttpStatus(403))
+    def test_metadata_403_identifies_stage(self, request):
+        with self.assertRaisesRegex(mirror.SyncError, "GitHub Release API returned HTTP 403"):
+            mirror.get_github("bankmod", "v1.0.19")
+
     def test_exact_asset_and_no_toll(self):
         self.assertEqual(self.candidate.file, "bankmod-1.0.19.jar")
         self.assertEqual(self.candidate.gitee_tag, "bankmod-v1.0.19")
