@@ -236,6 +236,10 @@ class MirrorTests(unittest.TestCase):
              patch.object(mirror.time, "sleep"):
             mirror.confirm_public_manifests({"latest.json": expected})
             self.assertEqual(2, fetch.call_count)
+            self.assertEqual({"gitee.com", "raw.giteeusercontent.com"}, fetch.call_args.kwargs["hosts"])
+            self.assertTrue(fetch.call_args.kwargs["redirects"])
+            self.assertNotIn("Authorization", fetch.call_args.kwargs["headers"])
+            self.assertFalse(mirror.endpoint_ok("https://raw.giteeusercontent.com.evil.invalid/file", mirror.GITEE_RAW_HOSTS))
 
 
 if __name__ == "__main__":

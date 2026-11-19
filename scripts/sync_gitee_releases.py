@@ -31,6 +31,7 @@ GH_OWNER = "heplus1s"
 GITEE_REPO = "intelsayamdyes/mc-client-pack"
 GITEE_WEB = "https://gitee.com/" + GITEE_REPO
 GITEE_API = "https://gitee.com/api/v5/repos/" + GITEE_REPO
+GITEE_RAW_HOSTS = {"gitee.com", "raw.giteeusercontent.com"}
 MAX_JAR = 50 * 1024 * 1024
 VERSION = re.compile(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 GH_HOSTS = {"api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"}
@@ -254,6 +255,12 @@ def probe_existing_release(candidate, token):
     if candidate.digest and sum(item.get("name") == candidate.file for item in attachments) == 1:
         gitee_stage("anonymous attachment verification", gitee_download, candidate, candidate.digest.removeprefix("sha256:"))
         print(f"GITEE PUBLIC DOWNLOAD VERIFIED {candidate.file}; no writes", flush=True)
+        published = read_public_manifest("latest.json")
+        row = next(row for row in published["mods"] if row["id"] == candidate.mod)
+        if (row.get("version"), row.get("sha256"), row.get("url")) == (candidate.version, candidate.digest.removeprefix("sha256:"), candidate.gitee_url):
+            print(f"GITEE PUBLIC MANIFEST VERIFIED {candidate.file}; no writes", flush=True)
+        else:
+            print(f"GITEE PUBLIC MANIFEST {candidate.mod} currently lists {row.get('version')}; no writes", flush=True)
 
 
 def copy(candidate, token, apply):
@@ -371,19 +378,25 @@ def git(directory, args, extra_env=None):
     return p.stdout
 
 
+def read_public_manifest(name):
+    if name not in {"latest.json", "install.json"}:
+        raise SyncError("Unapproved raw manifest")
+    url = f"{GITEE_WEB}/raw/master/{name}"
+    raw = request(url, hosts=GITEE_RAW_HOSTS, headers={"Cache-Control": "no-cache"}, redirects=True)
+    return safely_read_manifest(raw, name.removesuffix(".json"))
+
+
 def confirm_public_manifests(expected):
     """Check the same anonymous endpoints the launcher reads; never retry a push."""
     for attempt in range(3):
         try:
             for name, document in expected.items():
-                url = f"{GITEE_WEB}/raw/master/{name}"
-                raw = request(url, hosts={"gitee.com"}, headers={"Cache-Control": "no-cache"})
-                if safely_read_manifest(raw, name.removesuffix(".json")) != document:
+                if read_public_manifest(name) != document:
                     raise SyncError("Public manifest has not caught up to the push")
             return
-        except SyncError:
+        except SyncError as exc:
             if attempt == 2:
-                raise SyncError("Push completed, but anonymous raw contents were not confirmed; do not re-push blindly") from None
+                raise SyncError(f"Anonymous raw contents were not confirmed: {exc}; do not re-push blindly") from None
             time.sleep(2 ** attempt)
 
 def publish_manifests(replacements, mode):
@@ -412,7 +425,8 @@ def publish_manifests(replacements, mode):
                 raise SyncError("Paired manifests would disagree on a managed row; nothing changed")
         changed = [name for name in paths if originals[name] != finals[name]]
         if not changed:
-            print("No manifest change needed.")
+            confirm_public_manifests(finals)
+            print("No manifest change needed; current public manifest verified.")
             return
         for name in changed:
             (repo / name).write_text(json.dumps(finals[name], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
