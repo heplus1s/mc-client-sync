@@ -230,6 +230,25 @@ class MirrorTests(unittest.TestCase):
         self.assertEqual(install, mirror.patch_manifest(install, {}))
         self.assertNotIn("arcadehall", mirror.MODS)
 
+    def test_arcade_withdrawal_requires_no_manifest_link_and_exact_recoverable_asset(self):
+        latest, _ = self.manifests()
+        with patch.object(mirror, "read_public_manifest", return_value={**latest, "mods": [{"id": "arcadehall"}]}):
+            with self.assertRaisesRegex(mirror.SyncError, "still listed"):
+                mirror.withdraw_arcade_016("unused")
+        target = {"id": 24, "name": "arcadehall-0.1.6.jar"}
+        keep = {"id": 25, "name": "keep.jar"}
+        with patch.object(mirror, "read_public_manifest", return_value=latest), \
+             patch.object(mirror, "find_release", return_value={"id": 30, "tag_name": "arcadehall-v0.1.6"}), \
+             patch.object(mirror, "list_attachments", side_effect=[[target, keep], [keep]]), \
+             patch.object(mirror, "inspect_jar") as digest, \
+             patch.object(mirror, "gitee_download") as checksum, \
+             patch.object(mirror, "request", side_effect=[b"upstream", b""]) as http:
+            mirror.withdraw_arcade_016("test_token")
+            digest.assert_called_once()
+            checksum.assert_called_once()
+            self.assertTrue(http.call_args.args[0].endswith("/releases/30/attach_files/24?access_token=test_token"))
+            self.assertEqual("DELETE", http.call_args.kwargs["method"])
+
     def test_client_rollout_requires_all_three_compatible_versions(self):
         rows = {mod: {"version": version} for mod, version in mirror.INTEGRATION_FLOORS.items()}
         self.assertEqual(rows, mirror.client_manifest_updates(rows))
