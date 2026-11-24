@@ -1,6 +1,6 @@
 # GitHub 正式版 → Gitee 客户端模组
 
-只复制白名单内的正式 Release 主 JAR：银行、商店、市场、领地和 BotMod（`MinecraftBotMod`，模组 ID 为 `societybots`）。BotMod 从 0.1.3 起同步，且客户端清单仅在一次全量同步中同时验证银行 ≥ 1.0.30、领地 ≥ 1.0.18 后才加入或更新。客户端安装 BotMod 还需现有 Fabric API、Carpet。游艺厅不在镜像范围，更新列表会移除先前误加的条目。
+只复制白名单内的正式 Release 主 JAR：银行、商店、市场、领地和 BotMod（`MinecraftBotMod`，模组 ID 为 `societybots`）。BotMod 从 0.1.3 起同步，且单独的 `latest-bot.json` 仅在一次全量同步中同时验证银行 ≥ 1.0.30、领地 ≥ 1.0.18 后生成或更新。旧 PCL 更新器的 `latest.json` 固定四项（银行、商店、市场、领地）；旧客户端不会被强制安装 Bot。客户端安装 BotMod 还需现有 Fabric API、Carpet。游艺厅不在镜像范围，更新列表会移除先前误加的条目。
 目标为 `intelsayamdyes/mc-client-pack`。每个模组版本使用独立 Gitee 发行标签，例如 `bankmod-v1.0.19`。
 不复制源码、测试包、收费 Mod 或第三方附件；不删除或覆盖已有附件。只有匿名下载回来的 JAR 与官方 JAR 字节匹配后才提交清单；不自动降级，不改 TOML、资源包或配置。
 
@@ -13,7 +13,7 @@
 
 ## 清单模式
 
-- 默认 `GITEE_MANIFEST_MODE=latest`：只改 `master` 的 `latest.json` 中发生变化的自制模组条目，保留 `install.json` 为既有初装基线、两份清单既有的 `release=v3.04` 等包级字段。支持读取 `latest.json` 的 PCL 启动检查之后会发现新版及新增的已验证模组；首次安装若仍按 `install.json`，则先用基线，直到启动更新成功。
+- 默认 `GITEE_MANIFEST_MODE=latest`：只改 `master` 的 `latest.json` 中发生变化的自制模组条目，保留 `install.json` 为既有初装基线、两份清单既有的 `release=v3.04` 等包级字段。支持读取 `latest.json` 的 PCL 启动检查之后只会更新原四项；首次安装若仍按 `install.json`，则先用基线，直到启动更新成功。
 - `GITEE_MANIFEST_MODE=none`：只同步附件，不写任何 Git 文件，PCL 清单也不会变化。
 - `GITEE_MANIFEST_MODE=paired`：在同一个提交流程匹配更新 `latest.json` 和 `install.json`，前提是配好经验证的 `GITEE_ASSETSET_SCHEME`。现有 `assetSet` 生成办法未确认，不应直接开 paired；`canonical-json-sha256` 仅当既有指纹等于脚本的排序紧凑 JSON SHA-256 时才生效，`preserve` 只应在确认启动器不把它当内容校验后使用，否则保留默认模式。
 

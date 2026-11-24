@@ -212,13 +212,13 @@ class MirrorTests(unittest.TestCase):
         records = {mod: {"id": mod, "version": version, "file": f"{mod}-{version}.jar",
                          "bytes": 91, "sha256": "a" * 64, "url": f"https://gitee.com/test/{mod}"}
                    for mod, (_, version) in mirror.NEW_CLIENT_MODS.items()}
-        out = mirror.patch_manifest(latest, records)
+        out = mirror.patch_manifest(latest, records, include_bot=True)
         self.assertEqual(latest["mods"], out["mods"][:len(latest["mods"])])
         self.assertEqual(set(mirror.MODS), {r["id"] for r in out["mods"]})
         self.assertEqual(out, mirror.safely_read_manifest(json.dumps(out), "latest"))
-        self.assertEqual(out, mirror.patch_manifest(out, records))
-        with self.assertRaisesRegex(mirror.SyncError, "Cannot verify"):
-            mirror.patch_manifest(install, records, "canonical-json-sha256")
+        self.assertEqual(out, mirror.patch_manifest(out, records, include_bot=True))
+        self.assertEqual(latest, mirror.patch_manifest(out, records))
+        self.assertEqual(install, mirror.patch_manifest(install, records, "canonical-json-sha256"))
 
     def test_withdrawn_arcade_is_removed_from_update_list_only(self):
         latest, install = self.manifests()

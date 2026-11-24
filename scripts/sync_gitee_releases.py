@@ -353,11 +353,11 @@ def version_number(text):
     return tuple(map(int, version_of(text).split(".")))
 
 
-def patch_manifest(doc, replacements, scheme=None):
+def patch_manifest(doc, replacements, scheme=None, *, include_bot=False):
     out = deepcopy(doc)
-    # Roll back only the withdrawn Arcade Hall client manifest entry.
     if doc["kind"] == "latest":
-        out["mods"] = [row for row in out["mods"] if row["id"] not in RETIRED_CLIENT_MODS]
+        allowed = set(MODS) if include_bot else set(BASE_MODS)
+        out["mods"] = [row for row in out["mods"] if row["id"] in allowed]
     for i, old in enumerate(out["mods"]):
         new = replacements.get(old["id"])
         if new is None:
@@ -373,7 +373,7 @@ def patch_manifest(doc, replacements, scheme=None):
         out["mods"][i] = {**old, **new}
     # Only verified JAR records returned by copy() may extend the existing manifest.
     present = {row["id"] for row in out["mods"]}
-    for mod in NEW_CLIENT_MODS:
+    for mod in NEW_CLIENT_MODS if include_bot and doc["kind"] == "latest" else ():
         if mod in replacements and mod not in present:
             out["mods"].append(deepcopy(replacements[mod]))
     if out != doc and doc["kind"] == "install" and "assetSet" in doc:
@@ -403,11 +403,11 @@ def git(directory, args, extra_env=None):
 
 
 def read_public_manifest(name):
-    if name not in {"latest.json", "install.json"}:
+    if name not in {"latest.json", "latest-bot.json", "install.json"}:
         raise SyncError("Unapproved raw manifest")
     url = f"{GITEE_WEB}/raw/master/{name}"
     raw = request(url, hosts=GITEE_RAW_HOSTS, headers={"Cache-Control": "no-cache"}, redirects=True)
-    return safely_read_manifest(raw, name.removesuffix(".json"))
+    return safely_read_manifest(raw, "latest" if name == "latest-bot.json" else name.removesuffix(".json"))
 
 
 def confirm_public_manifests(expected):
@@ -440,13 +440,26 @@ def publish_manifests(replacements, mode):
         for name in paths:
             kind = name.removesuffix(".json")
             originals[name] = safely_read_manifest(git(repo, ["show", f"HEAD:{name}"]), kind)
-            finals[name] = patch_manifest(originals[name], replacements, scheme)
+            finals[name] = patch_manifest(originals[name], {k:v for k,v in replacements.items() if k in BASE_MODS}, scheme)
         if mode == "paired":
-            managed = set(replacements)
+            managed = set(replacements) & set(BASE_MODS)
             rows_by_manifest = [{r["id"]: r for r in doc["mods"] if r["id"] in managed} for doc in finals.values()]
             keys = ("id", "version", "file", "bytes", "sha256", "url")
             if any(any(rows_by_manifest[0][id].get(k) != rows_by_manifest[1][id].get(k) for k in keys) for id in managed):
                 raise SyncError("Paired manifests would disagree on a managed row; nothing changed")
+        if "societybots" in replacements:
+            name = "latest-bot.json"
+            paths.append(name)
+            exists = git(repo, ["ls-tree", "--name-only", "HEAD", "--", name]).decode().strip() == name
+            originals[name] = safely_read_manifest(git(repo, ["show", f"HEAD:{name}"]), "latest") if exists else None
+            base = deepcopy(finals["latest.json"])
+            if originals[name]:
+                prior_bot = [row for row in originals[name]["mods"] if row["id"] == "societybots"]
+                base["mods"].extend(prior_bot)
+            else:
+                # Keep a newer Bot entry if one was already present before legacy-manifest repair.
+                base["mods"].extend(row for row in originals["latest.json"]["mods"] if row["id"] == "societybots")
+            finals[name] = patch_manifest(base, replacements, include_bot=True)
         changed = [name for name in paths if originals[name] != finals[name]]
         if not changed:
             confirm_public_manifests(finals)
@@ -478,7 +491,7 @@ def client_manifest_updates(replacements):
     if all(mod in replacements and version_number(replacements[mod]["version"]) >= version_number(required)
            for mod, required in INTEGRATION_FLOORS.items()):
         return replacements
-    print("Bot client entry stays unchanged until all three compatible JARs are verified together.")
+    print("Bot-only manifest stays unchanged until all three compatible JARs are verified together.")
     return {mod: row for mod, row in replacements.items() if mod not in NEW_CLIENT_MODS}
 
 
