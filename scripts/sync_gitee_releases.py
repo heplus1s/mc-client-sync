@@ -79,10 +79,10 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def request(url, *, hosts, limit=2_000_000, data=None, headers=None, redirects=False, timeout=30, method=None):
+def request(url, *, hosts, limit=2_000_000, data=None, headers=None, redirects=False, timeout=30):
     if not endpoint_ok(url, hosts):
         raise SyncError("Unapproved endpoint")
-    req = urllib.request.Request(url, data=data, method=method, headers={"User-Agent": "mc-client-pack-sync/1", **(headers or {})})
+    req = urllib.request.Request(url, data=data, headers={"User-Agent": "mc-client-pack-sync/1", **(headers or {})})
     opener = urllib.request.build_opener(SafeRedirect(hosts, redirects))
     try:
         with opener.open(req, timeout=timeout) as response:
@@ -495,51 +495,13 @@ def client_manifest_updates(replacements):
     return {mod: row for mod, row in replacements.items() if mod not in NEW_CLIENT_MODS}
 
 
-def withdraw_arcade_016(token):
-    """Remove only the recoverable attachment published in the mistaken mirror run."""
-    mod, repo, tag, version = "arcadehall", "MinecraftArcadeReleases", "v0.1.6", "0.1.6"
-    name, size = "arcadehall-0.1.6.jar", 106373
-    digest = "f28fee4b160080f10665a31511b11e0d5ef5d841ca142a4c5d6c119fcef42463"
-    url = f"https://github.com/{GH_OWNER}/{repo}/releases/download/{tag}/{name}"
-    c = Candidate(mod, repo, tag, version, name, url, size, "sha256:" + digest)
-    if any(row["id"] == mod for row in read_public_manifest("latest.json")["mods"]):
-        raise SyncError("Arcade Hall is still listed in latest.json; remove that entry first")
-    release = find_release(c, token)
-    if release is None:
-        print("Arcade Hall Gitee release does not exist; nothing to withdraw.")
-        return
-    release_id = release.get("id")
-    if type(release_id) is not int or release_id <= 0 or release.get("tag_name") != c.gitee_tag:
-        raise SyncError("Unexpected Gitee release identity")
-    files = [item for item in list_attachments(release_id, token) if item.get("name") == name]
-    if not files:
-        print("Arcade Hall attachment already absent from the verified Gitee release.")
-        return
-    if len(files) != 1 or type(files[0].get("id")) is not int or files[0]["id"] <= 0:
-        raise SyncError("Unexpected Gitee attachment identity")
-    # Verify the public original exists and can restore exactly the asset being withdrawn.
-    original = request(c.url, hosts=GH_HOSTS, limit=MAX_JAR, redirects=True)
-    inspect_jar(c, original)
-    gitee_download(c, digest)
-    path = f"/releases/{release_id}/attach_files/{files[0]['id']}"
-    query = urllib.parse.urlencode({"access_token": token})
-    try:
-        request(f"{GITEE_API}{path}?{query}", hosts={"gitee.com"}, method="DELETE")
-    except SyncError as exc:
-        if any(item.get("name") == name for item in list_attachments(release_id, token)):
-            raise exc from None
-    if any(item.get("name") == name for item in list_attachments(release_id, token)):
-        raise SyncError("Target attachment is still present after withdrawal")
-    print("WITHDRAWN only Gitee arcadehall-v0.1.6/arcadehall-0.1.6.jar; upstream bytes verified; other assets untouched.")
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="Create Gitee releases/assets; default dry run.")
     parser.add_argument("--manifest-mode", choices=("none", "latest", "paired"), default="none",
                         help="On apply, publish verified manifest changes (none, latest only, or both).")
     parser.add_argument("--probe-gitee", action="store_true", help="With token, check Gitee release/attachment listing without writes.")
-    parser.add_argument("--mod", choices=(*MODS, "withdraw-arcadehall"), help="Limit to one approved mod.")
+    parser.add_argument("--mod", choices=tuple(MODS), help="Limit to one approved mod.")
     parser.add_argument("--tag", help="Use a specific stable GitHub tag, e.g. v1.0.19; requires --mod.")
     args = parser.parse_args()
     if args.tag and (not args.mod or not VERSION.fullmatch(args.tag)):
@@ -547,17 +509,6 @@ def main():
     token = os.environ.get("GITEE_TOKEN", "")
     if args.apply and not re.fullmatch(r"[A-Za-z0-9_.~+/-]{8,512}", token):
         parser.error("Set GITEE_TOKEN via GitHub Actions Secrets before applying")
-    if args.mod == "withdraw-arcadehall":
-        if not args.apply or args.tag:
-            parser.error("Arcade withdrawal is an explicit manual apply without a tag argument")
-        if os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
-            parser.error("Arcade withdrawal is not permitted in automatic runs")
-        try:
-            withdraw_arcade_016(token)
-            return 0
-        except SyncError as exc:
-            print(f"Arcade withdrawal incomplete: {exc}", file=sys.stderr)
-            return 1
     failed = False
     replacements = {}
     for mod in (args.mod,) if args.mod else MODS:
