@@ -1,6 +1,6 @@
 # GitHub 正式版 → Gitee 客户端模组
 
-只复制白名单内的正式 Release 主 JAR：银行、商店、市场、领地，以及 BotMod（`MinecraftBotMod`，模组 ID 为 `societybots`）和游艺厅（仅 `MinecraftArcadeReleases` 的 `arcadehall`，不接触私有源库）。BotMod 从 0.1.3 起同步，游艺厅从 0.1.6 起同步；未发布达标版本时不改该模组的客户端清单。BotMod 和游艺厅的清单仅在一次全量同步中同时验证银行 ≥ 1.0.30、领地 ≥ 1.0.18 及两项新包后才加入或更新。客户端安装 BotMod 还需现有 Fabric API、Carpet。
+只复制白名单内的正式 Release 主 JAR：银行、商店、市场、领地和 BotMod（`MinecraftBotMod`，模组 ID 为 `societybots`）。BotMod 从 0.1.3 起同步，且客户端清单仅在一次全量同步中同时验证银行 ≥ 1.0.30、领地 ≥ 1.0.18 后才加入或更新。客户端安装 BotMod 还需现有 Fabric API、Carpet。游艺厅不在镜像范围，更新列表会移除先前误加的条目。
 目标为 `intelsayamdyes/mc-client-pack`。每个模组版本使用独立 Gitee 发行标签，例如 `bankmod-v1.0.19`。
 不复制源码、测试包、收费 Mod 或第三方附件；不删除或覆盖已有附件。只有匿名下载回来的 JAR 与官方 JAR 字节匹配后才提交清单；不自动降级，不改 TOML、资源包或配置。
 

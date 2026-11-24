@@ -29,11 +29,11 @@ BASE_MODS = {
 }
 # A GitHub Release made before the tested cross-mod APIs is not eligible for automatic client rollout.
 NEW_CLIENT_MODS = {
-    "arcadehall": ("MinecraftArcadeReleases", "0.1.6"),
     "societybots": ("MinecraftBotMod", "0.1.3"),
 }
 INTEGRATION_FLOORS = {"bankmod": "1.0.30", "landmod": "1.0.18",
                       **{mod: version for mod, (_, version) in NEW_CLIENT_MODS.items()}}
+RETIRED_CLIENT_MODS = {"arcadehall"}
 MODS = BASE_MODS | {mod: repo for mod, (repo, _) in NEW_CLIENT_MODS.items()}
 GH_OWNER = "heplus1s"
 GITEE_REPO = "intelsayamdyes/mc-client-pack"
@@ -340,7 +340,7 @@ def safely_read_manifest(raw, kind):
     ids = [row["id"] for row in rows]
     if len(set(ids)) != len(ids) or set(BASE_MODS) - set(ids):
         raise SyncError(f"Missing or duplicate {kind} mod IDs")
-    if kind == "latest" and set(ids) - set(MODS):
+    if kind == "latest" and set(ids) - (set(MODS) | RETIRED_CLIENT_MODS):
         raise SyncError("Unexpected latest.json mod IDs; no change")
     return doc
 
@@ -355,6 +355,9 @@ def version_number(text):
 
 def patch_manifest(doc, replacements, scheme=None):
     out = deepcopy(doc)
+    # Roll back only the withdrawn Arcade Hall client manifest entry.
+    if doc["kind"] == "latest":
+        out["mods"] = [row for row in out["mods"] if row["id"] not in RETIRED_CLIENT_MODS]
     for i, old in enumerate(out["mods"]):
         new = replacements.get(old["id"])
         if new is None:
@@ -469,13 +472,13 @@ def publish_manifests(replacements, mode):
         print(f"Published and anonymously verified only {', '.join(changed)} in Gitee master commit {published}.")
 
 def client_manifest_updates(replacements):
-    # First-time Bot/Arcade rollout needs a verified compatible set in one multi-mod run.
+    # Bot rollout needs a verified compatible set in one multi-mod run.
     if not any(mod in replacements for mod in NEW_CLIENT_MODS):
         return replacements
     if all(mod in replacements and version_number(replacements[mod]["version"]) >= version_number(required)
            for mod, required in INTEGRATION_FLOORS.items()):
         return replacements
-    print("Bot/Arcade client entries stay unchanged until the four compatible JARs are verified together.")
+    print("Bot client entry stays unchanged until all three compatible JARs are verified together.")
     return {mod: row for mod, row in replacements.items() if mod not in NEW_CLIENT_MODS}
 
 

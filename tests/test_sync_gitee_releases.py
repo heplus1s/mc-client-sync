@@ -205,7 +205,7 @@ class MirrorTests(unittest.TestCase):
         with self.assertRaises(mirror.SyncError):
             mirror.safely_read_manifest('{"schema":1,"schema":1}', "latest")
 
-    def test_bot_and_arcade_migrate_existing_latest_without_removing_other_mods(self):
+    def test_bot_migrates_existing_latest_without_removing_other_mods(self):
         latest, install = self.manifests()
         for doc in (latest, install):
             self.assertEqual(doc, mirror.safely_read_manifest(json.dumps(doc), doc["kind"]))
@@ -220,7 +220,17 @@ class MirrorTests(unittest.TestCase):
         with self.assertRaisesRegex(mirror.SyncError, "Cannot verify"):
             mirror.patch_manifest(install, records, "canonical-json-sha256")
 
-    def test_client_rollout_requires_all_four_compatible_versions(self):
+    def test_withdrawn_arcade_is_removed_from_update_list_only(self):
+        latest, install = self.manifests()
+        arcade = {"id": "arcadehall", "version": "0.1.6", "file": "arcadehall-0.1.6.jar"}
+        latest["mods"] = [*latest["mods"], arcade]
+        install["mods"] = [*install["mods"], arcade]
+        validated = mirror.safely_read_manifest(json.dumps(latest), "latest")
+        self.assertEqual(latest["mods"][:-1], mirror.patch_manifest(validated, {})["mods"])
+        self.assertEqual(install, mirror.patch_manifest(install, {}))
+        self.assertNotIn("arcadehall", mirror.MODS)
+
+    def test_client_rollout_requires_all_three_compatible_versions(self):
         rows = {mod: {"version": version} for mod, version in mirror.INTEGRATION_FLOORS.items()}
         self.assertEqual(rows, mirror.client_manifest_updates(rows))
         self.assertFalse(mirror.client_manifest_updates({"societybots": rows["societybots"]}))
@@ -235,8 +245,8 @@ class MirrorTests(unittest.TestCase):
             mirror.get_github("bankmod")
         with self.assertRaisesRegex(mirror.SyncError, "HTTP 404"):
             mirror.get_github("societybots", "v0.1.3")
-        with self.assertRaises(mirror.ReleaseNotReady):
-            mirror.candidate_for("arcadehall", release(self.data, tag_name="v0.1.5"))
+        self.assertNotIn("arcadehall", mirror.MODS)
+        self.assertIn("arcadehall", mirror.RETIRED_CLIENT_MODS)
 
     def test_publish_latest_only_never_stages_install_or_forces(self):
         latest, _ = self.manifests()
