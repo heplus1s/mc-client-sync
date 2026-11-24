@@ -21,12 +21,20 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass
 
-MODS = {
+BASE_MODS = {
     "bankmod": "MinecraftBankMod",
     "shopmod": "MinecraftShopMod",
     "marketmod": "MinecraftMarketMod",
     "landmod": "MinecraftLandMod",
 }
+# A GitHub Release made before the tested cross-mod APIs is not eligible for automatic client rollout.
+NEW_CLIENT_MODS = {
+    "arcadehall": ("MinecraftArcadeReleases", "0.1.6"),
+    "societybots": ("MinecraftBotMod", "0.1.3"),
+}
+INTEGRATION_FLOORS = {"bankmod": "1.0.30", "landmod": "1.0.18",
+                      **{mod: version for mod, (_, version) in NEW_CLIENT_MODS.items()}}
+MODS = BASE_MODS | {mod: repo for mod, (repo, _) in NEW_CLIENT_MODS.items()}
 GH_OWNER = "heplus1s"
 GITEE_REPO = "intelsayamdyes/mc-client-pack"
 GITEE_WEB = "https://gitee.com/" + GITEE_REPO
@@ -39,6 +47,10 @@ GITEE_HOSTS = {"gitee.com", "foruda.gitee.com", "gitee.com.cn", "gitee-prod-atta
 
 
 class SyncError(Exception):
+    pass
+
+
+class ReleaseNotReady(SyncError):
     pass
 
 
@@ -125,6 +137,8 @@ def candidate_for(mod: str, release: dict) -> Candidate:
         raise SyncError("Release is not published stable")
     tag = release["tag_name"]
     version = version_of(tag)
+    if mod in NEW_CLIENT_MODS and version_number(version) < version_number(NEW_CLIENT_MODS[mod][1]):
+        raise ReleaseNotReady("Latest official Release is below the approved client compatibility floor")
     repo = MODS[mod]
     filename = f"{mod}-{version}.jar"
     assets = [item for item in release.get("assets", []) if item.get("name") == filename]
@@ -178,6 +192,8 @@ def get_github(mod, version=None):
     try:
         release = json_request(url + path, hosts={"api.github.com"}, headers=headers)
     except HttpStatus as exc:
+        if exc.code == 404 and mod in NEW_CLIENT_MODS and not version:
+            raise ReleaseNotReady("No published official Release yet") from None
         raise SyncError(f"GitHub Release API returned HTTP {exc.code}") from None
     return candidate_for(mod, release)
 
@@ -322,9 +338,9 @@ def safely_read_manifest(raw, kind):
     if not isinstance(rows, list) or any(not isinstance(r, dict) or not isinstance(r.get("id"), str) for r in rows):
         raise SyncError(f"Unknown {kind} mods representation")
     ids = [row["id"] for row in rows]
-    if len(set(ids)) != len(ids) or set(MODS) - set(ids):
+    if len(set(ids)) != len(ids) or set(BASE_MODS) - set(ids):
         raise SyncError(f"Missing or duplicate {kind} mod IDs")
-    if kind == "latest" and set(ids) != set(MODS):
+    if kind == "latest" and set(ids) - set(MODS):
         raise SyncError("Unexpected latest.json mod IDs; no change")
     return doc
 
@@ -352,6 +368,11 @@ def patch_manifest(doc, replacements, scheme=None):
                 raise SyncError("Same-version asset bytes changed; manifests unchanged")
             continue
         out["mods"][i] = {**old, **new}
+    # Only verified JAR records returned by copy() may extend the existing manifest.
+    present = {row["id"] for row in out["mods"]}
+    for mod in NEW_CLIENT_MODS:
+        if mod in replacements and mod not in present:
+            out["mods"].append(deepcopy(replacements[mod]))
     if out != doc and doc["kind"] == "install" and "assetSet" in doc:
         if scheme == "canonical-json-sha256" and doc["assetSet"] == manifest_fingerprint(doc["mods"]):
             out["assetSet"] = manifest_fingerprint(out["mods"])
@@ -447,6 +468,17 @@ def publish_manifests(replacements, mode):
         confirm_public_manifests({name: finals[name] for name in changed})
         print(f"Published and anonymously verified only {', '.join(changed)} in Gitee master commit {published}.")
 
+def client_manifest_updates(replacements):
+    # First-time Bot/Arcade rollout needs a verified compatible set in one multi-mod run.
+    if not any(mod in replacements for mod in NEW_CLIENT_MODS):
+        return replacements
+    if all(mod in replacements and version_number(replacements[mod]["version"]) >= version_number(required)
+           for mod, required in INTEGRATION_FLOORS.items()):
+        return replacements
+    print("Bot/Arcade client entries stay unchanged until the four compatible JARs are verified together.")
+    return {mod: row for mod, row in replacements.items() if mod not in NEW_CLIENT_MODS}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="Create Gitee releases/assets; default dry run.")
@@ -465,7 +497,13 @@ def main():
     replacements = {}
     for mod in (args.mod,) if args.mod else MODS:
         try:
-            candidate = get_github(mod, args.tag)
+            try:
+                candidate = get_github(mod, args.tag)
+            except ReleaseNotReady as exc:
+                if args.mod:
+                    raise
+                print(f"SKIP {mod}: {exc}; leaving existing Gitee files unchanged for this mod.", flush=True)
+                continue
             if args.probe_gitee and not args.apply and mod == "bankmod":
                 if token:
                     probe_existing_release(candidate, token)
@@ -481,7 +519,7 @@ def main():
             print(f"{mod}: {detail}", file=sys.stderr)
     if not failed and args.apply:
         try:
-            publish_manifests(replacements, args.manifest_mode)
+            publish_manifests(client_manifest_updates(replacements), args.manifest_mode)
         except (SyncError, TypeError, AttributeError, KeyError, ValueError) as exc:
             detail = str(exc) if isinstance(exc, SyncError) else "Unexpected manifest structure"
             print(f"Manifest sync incomplete: {detail}", file=sys.stderr)

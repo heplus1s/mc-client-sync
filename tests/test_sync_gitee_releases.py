@@ -150,7 +150,7 @@ class MirrorTests(unittest.TestCase):
     def manifests(self):
         rows = [{"id": mod, "version": "1.0.18", "file": f"{mod}-1.0.18.jar",
                  "bytes": 3, "sha256": "a" * 64, "url": f"https://gitee.com/original/{mod}",
-                 "keepRowMetadata": True} for mod in mirror.MODS]
+                 "keepRowMetadata": True} for mod in mirror.BASE_MODS]
         raw = {"schema": 1, "packId": "ncepu-hd", "minecraft": "1.20.1", "release": "v3.04",
                "kind": "latest", "mods": rows, "keepTopLevelMetadata": True}
         install = {**raw, "kind": "install", "assetSet": "unverified",
@@ -204,6 +204,39 @@ class MirrorTests(unittest.TestCase):
             mirror.safely_read_manifest(json.dumps(latest), "latest")
         with self.assertRaises(mirror.SyncError):
             mirror.safely_read_manifest('{"schema":1,"schema":1}', "latest")
+
+    def test_bot_and_arcade_migrate_existing_latest_without_removing_other_mods(self):
+        latest, install = self.manifests()
+        for doc in (latest, install):
+            self.assertEqual(doc, mirror.safely_read_manifest(json.dumps(doc), doc["kind"]))
+        records = {mod: {"id": mod, "version": version, "file": f"{mod}-{version}.jar",
+                         "bytes": 91, "sha256": "a" * 64, "url": f"https://gitee.com/test/{mod}"}
+                   for mod, (_, version) in mirror.NEW_CLIENT_MODS.items()}
+        out = mirror.patch_manifest(latest, records)
+        self.assertEqual(latest["mods"], out["mods"][:len(latest["mods"])])
+        self.assertEqual(set(mirror.MODS), {r["id"] for r in out["mods"]})
+        self.assertEqual(out, mirror.safely_read_manifest(json.dumps(out), "latest"))
+        self.assertEqual(out, mirror.patch_manifest(out, records))
+        with self.assertRaisesRegex(mirror.SyncError, "Cannot verify"):
+            mirror.patch_manifest(install, records, "canonical-json-sha256")
+
+    def test_client_rollout_requires_all_four_compatible_versions(self):
+        rows = {mod: {"version": version} for mod, version in mirror.INTEGRATION_FLOORS.items()}
+        self.assertEqual(rows, mirror.client_manifest_updates(rows))
+        self.assertFalse(mirror.client_manifest_updates({"societybots": rows["societybots"]}))
+        incomplete = {**rows, "bankmod": {"version": "1.0.29"}}
+        self.assertEqual(set(mirror.BASE_MODS) & set(incomplete), set(mirror.client_manifest_updates(incomplete)))
+
+    @patch.object(mirror, "json_request", side_effect=mirror.HttpStatus(404))
+    def test_unreleased_bot_does_not_block_existing_mirrors(self, request):
+        with self.assertRaises(mirror.ReleaseNotReady):
+            mirror.get_github("societybots")
+        with self.assertRaisesRegex(mirror.SyncError, "HTTP 404"):
+            mirror.get_github("bankmod")
+        with self.assertRaisesRegex(mirror.SyncError, "HTTP 404"):
+            mirror.get_github("societybots", "v0.1.3")
+        with self.assertRaises(mirror.ReleaseNotReady):
+            mirror.candidate_for("arcadehall", release(self.data, tag_name="v0.1.5"))
 
     def test_publish_latest_only_never_stages_install_or_forces(self):
         latest, _ = self.manifests()
