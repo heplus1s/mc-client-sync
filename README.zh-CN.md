@@ -13,6 +13,9 @@
 
 ## 清单模式
 
+- 新版补丁读取独立的 `latest-managed.json`（`kind=latest-managed`）。每行仅指向已验 SHA-256 的 Gitee 正式 JAR；全量验证通过才发布。旧版继续读取 `latest.json` 或 `latest-bot.json`，首次安装的 `install.json` 默认仍不变。
+- 以后新增一个自研客户端 Mod，将其仓库、Mod ID 和最低支持版本加入脚本白名单，发布按同一命名格式的 JAR，再运行全量同步。新版客户端无需改脚本。退役时明确登记 `MANAGED_RETIRED`；记录持续保留在 `removedIds`，单纯缺行或下载失败不会触发卸载。退役只影响新版客户端已记录、哈希仍匹配的 JAR，不删 Gitee 旧附件、不动第三方 Mod 或配置。旧的固定四项/五项清单兼容策略保持独立。
+
 - 默认 `GITEE_MANIFEST_MODE=latest`：只改 `master` 的 `latest.json` 中发生变化的自制模组条目，保留 `install.json` 为既有初装基线、两份清单既有的 `release=v3.04` 等包级字段。支持读取 `latest.json` 的 PCL 启动检查之后只会更新原四项；首次安装若仍按 `install.json`，则先用基线，直到启动更新成功。
 - `GITEE_MANIFEST_MODE=none`：只同步附件，不写任何 Git 文件，PCL 清单也不会变化。
 - `GITEE_MANIFEST_MODE=paired`：在同一个提交流程匹配更新 `latest.json` 和 `install.json`，前提是配好经验证的 `GITEE_ASSETSET_SCHEME`。现有 `assetSet` 生成办法未确认，不应直接开 paired；`canonical-json-sha256` 仅当既有指纹等于脚本的排序紧凑 JSON SHA-256 时才生效，`preserve` 只应在确认启动器不把它当内容校验后使用，否则保留默认模式。

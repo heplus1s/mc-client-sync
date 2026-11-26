@@ -285,5 +285,52 @@ class MirrorTests(unittest.TestCase):
             self.assertFalse(mirror.endpoint_ok("https://raw.giteeusercontent.com.evil.invalid/file", mirror.GITEE_RAW_HOSTS))
 
 
+class ManagedManifest(unittest.TestCase):
+    def setUp(self):
+        self.base = {"schema": 1, "kind": "latest", "packId": "ncepu-hd", "minecraft": "1.20.1",
+                     "fabricLoader": "0.15.10", "release": "v3.04", "mods": []}
+        self.verified = {mod: self.record(mod) for mod in mirror.MODS}
+
+    def record(self, mod, version="1.0.1"):
+        file = f"{mod}-{version}.jar"
+        return {"id": mod, "version": version, "file": file, "bytes": 100, "sha256": "a" * 64,
+                "url": f"{mirror.GITEE_WEB}/releases/download/{mod}-v{version}/{file}"}
+
+    def test_build_is_stable_and_leaves_legacy_unchanged(self):
+        first = mirror.build_managed_manifest(self.base, self.verified)
+        self.assertEqual(set(mirror.MODS), {r["id"] for r in first["mods"]})
+        self.assertEqual([], first["removedIds"])
+        self.assertEqual("latest", self.base["kind"])
+        self.assertEqual([], self.base["mods"])
+        self.assertEqual(first, mirror.build_managed_manifest(self.base, self.verified, first))
+
+    def test_partial_sync_does_not_publish_incomplete_snapshot(self):
+        self.verified.pop("societybots")
+        self.assertIsNone(mirror.build_managed_manifest(self.base, self.verified))
+
+    def test_grow_and_explicit_retirement_without_implicit_deletion(self):
+        first = mirror.build_managed_manifest(self.base, self.verified)
+        next_policy = {k: v for k, v in mirror.MODS.items() if k != "shopmod"} | {"newfixture": "Fixture"}
+        self.verified["newfixture"] = self.record("newfixture")
+        with patch.object(mirror, "MODS", next_policy):
+            with self.assertRaisesRegex(mirror.SyncError, "without explicit retirement"):
+                mirror.build_managed_manifest(self.base, self.verified, first)
+            with patch.object(mirror, "MANAGED_RETIRED", {"shopmod"}):
+                second = mirror.build_managed_manifest(self.base, self.verified, first)
+            third = mirror.build_managed_manifest(self.base, self.verified, second)
+        self.assertEqual(["shopmod"], second["removedIds"])
+        self.assertEqual(["shopmod"], third["removedIds"])
+        self.assertEqual(set(next_policy), {r["id"] for r in second["mods"]})
+
+    def test_reject_changed_hash_same_version_and_noncanonical_urls(self):
+        first = mirror.build_managed_manifest(self.base, self.verified)
+        self.verified["societybots"]["sha256"] = "b" * 64
+        with self.assertRaisesRegex(mirror.SyncError, "same version"):
+            mirror.build_managed_manifest(self.base, self.verified, first)
+        self.verified["societybots"]["url"] = "https://unapproved.invalid/x.jar"
+        with self.assertRaisesRegex(mirror.SyncError, "Invalid managed release attachment"):
+            mirror.build_managed_manifest(self.base, self.verified)
+
+
 if __name__ == "__main__":
     unittest.main()

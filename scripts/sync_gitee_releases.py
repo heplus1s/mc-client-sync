@@ -35,6 +35,12 @@ INTEGRATION_FLOORS = {"bankmod": "1.0.30", "landmod": "1.0.18",
                       **{mod: version for mod, (_, version) in NEW_CLIENT_MODS.items()}}
 RETIRED_CLIENT_MODS = {"arcadehall"}
 MODS = BASE_MODS | {mod: repo for mod, (repo, _) in NEW_CLIENT_MODS.items()}
+LEGACY_BOT_MODS = frozenset(BASE_MODS) | {"societybots"}
+# Applies only to the opt-in managed feed. Never retire by omission or because
+# a download failed. Leave legacy manifests and existing release files intact.
+MANAGED_RETIRED = frozenset()
+MANAGED_MANIFEST = "latest-managed.json"
+MOD_ID = re.compile(r"[a-z][a-z0-9_]{1,63}\Z")
 GH_OWNER = "heplus1s"
 GITEE_REPO = "intelsayamdyes/mc-client-pack"
 GITEE_WEB = "https://gitee.com/" + GITEE_REPO
@@ -338,11 +344,61 @@ def safely_read_manifest(raw, kind):
     if not isinstance(rows, list) or any(not isinstance(r, dict) or not isinstance(r.get("id"), str) for r in rows):
         raise SyncError(f"Unknown {kind} mods representation")
     ids = [row["id"] for row in rows]
+    if kind == "latest-managed":
+        removed = doc.get("removedIds")
+        if (type(doc["schema"]) is not int or doc.get("fabricLoader") != "0.15.10" or
+                not isinstance(removed, list) or len(ids) > 64 or len(removed) > 128 or
+                any(not isinstance(m, str) or not MOD_ID.fullmatch(m) for m in ids + removed) or
+                len(set(removed)) != len(removed) or len(set(ids)) != len(ids) or set(ids) & set(removed)):
+            raise SyncError("Invalid managed membership")
+        for row in rows:
+            validate_managed_row(row)
+        return doc
     if len(set(ids)) != len(ids) or set(BASE_MODS) - set(ids):
         raise SyncError(f"Missing or duplicate {kind} mod IDs")
     if kind == "latest" and set(ids) - (set(MODS) | RETIRED_CLIENT_MODS):
         raise SyncError("Unexpected latest.json mod IDs; no change")
     return doc
+
+
+def validate_managed_row(row):
+    mod, version = row["id"], row.get("version")
+    if not isinstance(version, str) or version_of(version) != version:
+        raise SyncError("Invalid managed version")
+    file = f"{mod}-{version}.jar"
+    if (row.get("file") != file or row.get("url") != f"{GITEE_WEB}/releases/download/{mod}-v{version}/{file}" or
+            type(row.get("bytes")) is not int or not 1 <= row["bytes"] <= MAX_JAR or
+            not isinstance(row.get("sha256"), str) or not re.fullmatch("[a-f0-9]{64}", row["sha256"])):
+        raise SyncError("Invalid managed release attachment")
+
+
+def build_managed_manifest(legacy, verified, previous=None):
+    active = set(MODS) - MANAGED_RETIRED - RETIRED_CLIENT_MODS
+    if not active.issubset(verified):
+        return None  # never publish an incomplete managed snapshot
+    if MANAGED_RETIRED & RETIRED_CLIENT_MODS:
+        raise SyncError("Never-managed mod cannot be in retirement policy")
+    prior = {} if previous is None else {r["id"]: r for r in previous["mods"]}
+    if set(prior) - active - MANAGED_RETIRED:
+        raise SyncError("Managed ID removed without explicit retirement")
+    tombstones = MANAGED_RETIRED if previous is None else MANAGED_RETIRED | set(previous["removedIds"])
+    if active & tombstones:
+        raise SyncError("Managed ID was retired; use a migration before re-enabling it")
+    out = {key: deepcopy(legacy[key]) for key in ("schema", "packId", "minecraft", "fabricLoader", "release")}
+    out.update(kind="latest-managed", mods=[], removedIds=sorted(tombstones))
+    keys = ("id", "version", "file", "bytes", "sha256", "url")
+    for mod in sorted(active):
+        row = {k: verified[mod][k] for k in keys}
+        if row["id"] != mod:
+            raise SyncError("Verified result does not match managed ID")
+        if mod in prior:
+            before, after = version_number(prior[mod]["version"]), version_number(row["version"])
+            if after < before:
+                raise SyncError("Managed snapshot would downgrade a mod")
+            if after == before and any(row[k] != prior[mod][k] for k in keys):
+                raise SyncError("Managed release bytes or link changed at same version")
+        out["mods"].append(row)
+    return safely_read_manifest(json.dumps(out), "latest-managed")
 
 
 def manifest_fingerprint(rows):
@@ -356,7 +412,7 @@ def version_number(text):
 def patch_manifest(doc, replacements, scheme=None, *, include_bot=False):
     out = deepcopy(doc)
     if doc["kind"] == "latest":
-        allowed = set(MODS) if include_bot else set(BASE_MODS)
+        allowed = LEGACY_BOT_MODS if include_bot else set(BASE_MODS)
         out["mods"] = [row for row in out["mods"] if row["id"] in allowed]
     for i, old in enumerate(out["mods"]):
         new = replacements.get(old["id"])
@@ -373,7 +429,7 @@ def patch_manifest(doc, replacements, scheme=None, *, include_bot=False):
         out["mods"][i] = {**old, **new}
     # Only verified JAR records returned by copy() may extend the existing manifest.
     present = {row["id"] for row in out["mods"]}
-    for mod in NEW_CLIENT_MODS if include_bot and doc["kind"] == "latest" else ():
+    for mod in ("societybots",) if include_bot and doc["kind"] == "latest" else ():
         if mod in replacements and mod not in present:
             out["mods"].append(deepcopy(replacements[mod]))
     if out != doc and doc["kind"] == "install" and "assetSet" in doc:
@@ -403,7 +459,7 @@ def git(directory, args, extra_env=None):
 
 
 def read_public_manifest(name):
-    if name not in {"latest.json", "latest-bot.json", "install.json"}:
+    if name not in {"latest.json", "latest-bot.json", "install.json", MANAGED_MANIFEST}:
         raise SyncError("Unapproved raw manifest")
     url = f"{GITEE_WEB}/raw/master/{name}"
     raw = request(url, hosts=GITEE_RAW_HOSTS, headers={"Cache-Control": "no-cache"}, redirects=True)
@@ -460,6 +516,15 @@ def publish_manifests(replacements, mode):
                 # Keep a newer Bot entry if one was already present before legacy-manifest repair.
                 base["mods"].extend(row for row in originals["latest.json"]["mods"] if row["id"] == "societybots")
             finals[name] = patch_manifest(base, replacements, include_bot=True)
+        if (set(MODS) - MANAGED_RETIRED - RETIRED_CLIENT_MODS).issubset(replacements):
+            name = MANAGED_MANIFEST
+            exists = git(repo, ["ls-tree", "--name-only", "HEAD", "--", name]).decode().strip() == name
+            prior = safely_read_manifest(git(repo, ["show", f"HEAD:{name}"]), "latest-managed") if exists else None
+            managed = build_managed_manifest(finals["latest.json"], replacements, prior)
+            if managed is not None:
+                paths.append(name)
+                originals[name] = prior
+                finals[name] = managed
         changed = [name for name in paths if originals[name] != finals[name]]
         if not changed:
             confirm_public_manifests(finals)
